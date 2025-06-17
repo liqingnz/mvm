@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.15;
 
-import {IDelayedWMetis} from "./interfaces/IDelayedWMetis.sol";
-import { FaultDisputeGame, IFaultDisputeGame, IBigStepper, IInitializable } from "contracts/L1/dispute/FaultDisputeGame.sol";
+import { IDelayedWMetis } from "./interfaces/IDelayedWMetis.sol";
+import {
+    FaultDisputeGame,
+    IFaultDisputeGame,
+    IBigStepper,
+    IInitializable
+} from "contracts/L1/dispute/FaultDisputeGame.sol";
 import { Lib_AddressManager } from "../../libraries/resolver/Lib_AddressManager.sol";
 import "contracts/L1/dispute/lib/Types.sol";
 import "contracts/L1/dispute/lib/Errors.sol";
@@ -10,21 +15,21 @@ import "contracts/L1/dispute/lib/Errors.sol";
 /// @title PermissionedDisputeGame
 /// @notice PermissionedDisputeGame is a contract that inherits from `FaultDisputeGame`, and contains two roles:
 ///         - The `challenger` role, which is allowed to challenge a dispute.
-///         - The `proposer` role, which is allowed to create proposals and participate in their game.
+///         - The `defender` role, which is allowed to create proposals and participate in their game.
 ///         This contract exists as a way for networks to support the fault proof iteration of the OptimismPortal
 ///         contract without needing to support a fully permissionless system. Permissionless systems can introduce
 ///         costs that certain networks may not wish to support. This contract can also be used as a fallback mechanism
 ///         in case of a failure in the permissionless fault proof system in the stage one release.
 contract PermissionedDisputeGame is FaultDisputeGame {
-    /// @notice The proposer role is allowed to create proposals and participate in the dispute game.
-    address internal immutable PROPOSER;
+    /// @notice The defender role is allowed to create proposals and participate in the dispute game.
+    address internal immutable DEFENDER;
 
     /// @notice The challenger role is allowed to participate in the dispute game.
-    address internal immutable CHALLENGER;
+    address public challenger;
 
-    /// @notice Modifier that gates access to the `challenger` and `proposer` roles.
+    /// @notice Modifier that gates access to the `challenger` and `defender` roles.
     modifier onlyAuthorized() {
-        if (!(msg.sender == PROPOSER || msg.sender == CHALLENGER)) {
+        if (!(msg.sender == DEFENDER || msg.sender == challenger)) {
             revert BadAuth();
         }
         _;
@@ -40,7 +45,7 @@ contract PermissionedDisputeGame is FaultDisputeGame {
     /// @param _wmetis WMETIS contract for holding METIS.
     /// @param _addressManager Address manager contract.
     /// @param _l2ChainId Chain ID of the L2 network this contract argues about.
-    /// @param _proposer Address that is allowed to create instances of this contract.
+    /// @param _defender Address that is allowed to defend instances of this contract.
     /// @param _challenger Address that is allowed to challenge instances of this contract.
     constructor(
         GameType _gameType,
@@ -53,24 +58,23 @@ contract PermissionedDisputeGame is FaultDisputeGame {
         IDelayedWMetis _wmetis,
         Lib_AddressManager _addressManager,
         uint256 _l2ChainId,
-        address _proposer,
+        address _defender,
         address _challenger
     )
-    FaultDisputeGame(
-    _gameType,
-    _absolutePrestate,
-    _maxGameDepth,
-    _splitDepth,
-    _clockExtension,
-    _maxClockDuration,
-    _vm,
-    _wmetis,
-    _addressManager,
-    _l2ChainId
-    )
+        FaultDisputeGame(
+            _gameType,
+            _absolutePrestate,
+            _maxGameDepth,
+            _splitDepth,
+            _clockExtension,
+            _maxClockDuration,
+            _vm,
+            _wmetis,
+            _addressManager,
+            _l2ChainId
+        )
     {
-        PROPOSER = _proposer;
-        CHALLENGER = _challenger;
+        DEFENDER = _defender;
     }
 
     /// @inheritdoc IFaultDisputeGame
@@ -79,11 +83,7 @@ contract PermissionedDisputeGame is FaultDisputeGame {
         bool _isAttack,
         bytes calldata _stateData,
         bytes calldata _proof
-    )
-    public
-    override
-    onlyAuthorized
-    {
+    ) public override onlyAuthorized {
         super.step(_claimIndex, _isAttack, _stateData, _proof);
     }
 
@@ -97,18 +97,14 @@ contract PermissionedDisputeGame is FaultDisputeGame {
         uint256 _challengeIndex,
         Claim _claim,
         bool _isAttack
-    )
-    public
-    override
-    onlyAuthorized
-    {
+    ) public override onlyAuthorized {
         super.move(_disputed, _challengeIndex, _claim, _isAttack);
     }
 
     /// @inheritdoc IInitializable
     function initialize() public payable override {
-        // The creator of the dispute game must be the proposer EOA.
-        if (tx.origin != PROPOSER) revert BadAuth();
+        // The challenger is the EOA that initialized the game.
+        challenger = tx.origin;
 
         // Fallthrough initialization.
         super.initialize();
@@ -118,13 +114,8 @@ contract PermissionedDisputeGame is FaultDisputeGame {
     //                     IMMUTABLE GETTERS                      //
     ////////////////////////////////////////////////////////////////
 
-    /// @notice Returns the proposer address.
-    function proposer() external view returns (address proposer_) {
-        proposer_ = PROPOSER;
-    }
-
-    /// @notice Returns the challenger address.
-    function challenger() external view returns (address challenger_) {
-        challenger_ = CHALLENGER;
+    /// @notice Returns the defender address.
+    function defender() external view returns (address defender_) {
+        defender_ = DEFENDER;
     }
 }

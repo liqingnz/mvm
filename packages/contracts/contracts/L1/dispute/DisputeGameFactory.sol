@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.15;
 
-import {ISemver} from "../../universal/ISemver.sol";
-import {IDisputeGame} from "./interfaces/IDisputeGame.sol";
-import {IDisputeGameFactory} from "./interfaces/IDisputeGameFactory.sol";
-import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import {LibClone} from "solady/src/utils/LibClone.sol";
+import { ISemver } from "../../universal/ISemver.sol";
+import { IDisputeGame } from "./interfaces/IDisputeGame.sol";
+import { IDisputeGameFactory } from "./interfaces/IDisputeGameFactory.sol";
+import {
+    AccessControlUpgradeable
+} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import { LibClone } from "solady/src/utils/LibClone.sol";
 import "contracts/L1/dispute/lib/Types.sol";
 import "contracts/L1/dispute/lib/Errors.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title DisputeGameFactory
 /// @notice A factory contract for creating `IDisputeGame` contracts. All created dispute games are stored in both a
@@ -49,9 +51,6 @@ contract DisputeGameFactory is AccessControlUpgradeable, IDisputeGameFactory, IS
     ///         efficiently track dispute games.
     GameId[] internal _disputeGameList;
 
-    /// @notice An array of dispute games that have been requested.
-    mapping(bytes32 => DisputeInfo) public disputeGameCreationRequests;
-
     /// @notice Constructs a new DisputeGameFactory contract.
     /// @param _metis The Metis ERC20 token contract
     constructor(IERC20 _metis) AccessControlUpgradeable() {
@@ -77,28 +76,26 @@ contract DisputeGameFactory is AccessControlUpgradeable, IDisputeGameFactory, IS
         GameType _gameType,
         Claim _rootClaim,
         bytes calldata _extraData
-    )
-    external
-    view
-    returns (IDisputeGame proxy_, Timestamp timestamp_)
-    {
+    ) external view returns (IDisputeGame proxy_, Timestamp timestamp_) {
         Hash uuid = getGameUUID(_gameType, _rootClaim, _extraData);
         (, Timestamp timestamp, address proxy) = _disputeGames[uuid].unpack();
         (proxy_, timestamp_) = (IDisputeGame(proxy), timestamp);
     }
 
     /// @inheritdoc IDisputeGameFactory
-    function gameAtIndex(uint256 _index)
-    external
-    view
-    returns (GameType gameType_, Timestamp timestamp_, IDisputeGame proxy_)
-    {
+    function gameAtIndex(
+        uint256 _index
+    ) external view returns (GameType gameType_, Timestamp timestamp_, IDisputeGame proxy_) {
         (GameType gameType, Timestamp timestamp, address proxy) = _disputeGameList[_index].unpack();
         (gameType_, timestamp_, proxy_) = (gameType, timestamp, IDisputeGame(proxy));
     }
 
     /// @inheritdoc IDisputeGameFactory
-    function dispute(GameType _gameType, bytes calldata _extraData) external {
+    function dispute(
+        GameType _gameType,
+        Claim _rootClaim,
+        bytes calldata _extraData
+    ) external returns (IDisputeGame proxy_) {
         // Grab the implementation contract for the given `GameType`.
         IDisputeGame impl = gameImpls[_gameType];
 
@@ -107,53 +104,8 @@ contract DisputeGameFactory is AccessControlUpgradeable, IDisputeGameFactory, IS
 
         uint256 initBond = initBonds[_gameType];
 
-        // Check if sender has enough balance
-        IERC20 metis = METIS;
-        if (initBond > 0) {
-            // Transfer the bond from the sender to this contract
-            metis.transferFrom(msg.sender, address(this), initBond);
-        }
-
         // Get the hash of the parent block.
         bytes32 parentHash = blockhash(block.number - 1);
-
-        // Save the dispute game creation request.
-        DisputeInfo memory info = DisputeInfo({
-            gameType: _gameType,
-            sender: msg.sender,
-            bond: initBond,
-            l1Head: parentHash
-        });
-
-        bytes32 uuid = keccak256(abi.encodePacked(_gameType, _extraData));
-        if (disputeGameCreationRequests[uuid].l1Head != bytes32(0)) revert AlreadyDisputed(uuid);
-
-        disputeGameCreationRequests[uuid] = info;
-
-        emit DisputeGameRequested(msg.sender, _gameType, initBond, _extraData);
-    }
-
-    /// @inheritdoc IDisputeGameFactory
-    function create(
-        GameType _gameType,
-        Claim _rootClaim,
-        bytes calldata _extraData
-    )
-    external
-    onlyRole(GAME_CREATOR_ROLE)
-    returns (IDisputeGame proxy_)
-    {
-        // Grab the implementation contract for the given `GameType`.
-        IDisputeGame impl = gameImpls[_gameType];
-
-        // If there is no implementation to clone for the given `GameType`, revert.
-        if (address(impl) == address(0)) revert NoImplementation(_gameType);
-
-        // find the given request
-        bytes32 requestUuid = keccak256(abi.encodePacked(_gameType, _extraData));
-        DisputeInfo memory info = disputeGameCreationRequests[requestUuid];
-
-        if (info.l1Head == bytes32(0)) revert NoDisputeGameRequests();
 
         // Clone the implementation contract and initialize it with the given parameters.
         //
@@ -167,12 +119,16 @@ contract DisputeGameFactory is AccessControlUpgradeable, IDisputeGameFactory, IS
         // │ [84, 104)      │ Dispute creator                    │
         // │ [104, 104 + n) │ Extra data (opaque)                │
         // └────────────────┴────────────────────────────────────┘
-        proxy_ = IDisputeGame(address(impl).clone(abi.encodePacked(msg.sender, _rootClaim, info.l1Head, info.sender, _extraData)));
+        proxy_ = IDisputeGame(
+            address(impl).clone(
+                abi.encodePacked(msg.sender, _rootClaim, parentHash, msg.sender, _extraData)
+            )
+        );
 
         // Only transfer bond if it's not zero
-        if (info.bond > 0) {
-            // Transfer the initial bond to the new game contract
-            METIS.transfer(address(proxy_), info.bond);
+        if (initBond > 0) {
+            // Transfer the initial bond from the sender to the new game contract
+            METIS.transferFrom(msg.sender, address(proxy_), initBond);
         }
 
         // Initialize the game
@@ -185,12 +141,15 @@ contract DisputeGameFactory is AccessControlUpgradeable, IDisputeGameFactory, IS
         if (GameId.unwrap(_disputeGames[uuid]) != bytes32(0)) revert GameAlreadyExists(uuid);
 
         // Pack the game ID.
-        GameId id = LibGameId.pack(_gameType, Timestamp.wrap(uint64(block.timestamp)), address(proxy_));
+        GameId id = LibGameId.pack(
+            _gameType,
+            Timestamp.wrap(uint64(block.timestamp)),
+            address(proxy_)
+        );
 
         // Store the dispute game id in the mapping & emit the `DisputeGameCreated` event.
         _disputeGames[uuid] = id;
         _disputeGameList.push(id);
-        delete disputeGameCreationRequests[requestUuid];
         emit DisputeGameCreated(address(proxy_), _gameType, _rootClaim);
     }
 
@@ -199,11 +158,7 @@ contract DisputeGameFactory is AccessControlUpgradeable, IDisputeGameFactory, IS
         GameType _gameType,
         Claim _rootClaim,
         bytes calldata _extraData
-    )
-    public
-    pure
-    returns (Hash uuid_)
-    {
+    ) public pure returns (Hash uuid_) {
         uuid_ = Hash.wrap(keccak256(abi.encode(_gameType, _rootClaim, _extraData)));
     }
 
@@ -212,11 +167,7 @@ contract DisputeGameFactory is AccessControlUpgradeable, IDisputeGameFactory, IS
         GameType _gameType,
         uint256 _start,
         uint256 _n
-    )
-    external
-    view
-    returns (GameSearchResult[] memory games_)
-    {
+    ) external view returns (GameSearchResult[] memory games_) {
         // If the `_start` index is greater than or equal to the game array length or `_n == 0`, return an empty array.
         if (_start >= _disputeGameList.length || _n == 0) return games_;
 
@@ -228,7 +179,7 @@ contract DisputeGameFactory is AccessControlUpgradeable, IDisputeGameFactory, IS
         }
 
         // Perform a reverse linear search for the `_n` most recent games of type `_gameType`.
-        for (uint256 i = _start; i >= 0 && i <= _start;) {
+        for (uint256 i = _start; i >= 0 && i <= _start; ) {
             GameId id = _disputeGameList[i];
             (GameType gameType, Timestamp timestamp, address proxy) = id.unpack();
 
@@ -259,13 +210,19 @@ contract DisputeGameFactory is AccessControlUpgradeable, IDisputeGameFactory, IS
     }
 
     /// @inheritdoc IDisputeGameFactory
-    function setImplementation(GameType _gameType, IDisputeGame _impl) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setImplementation(
+        GameType _gameType,
+        IDisputeGame _impl
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         gameImpls[_gameType] = _impl;
         emit ImplementationSet(address(_impl), _gameType);
     }
 
     /// @inheritdoc IDisputeGameFactory
-    function setInitBond(GameType _gameType, uint256 _initBond) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setInitBond(
+        GameType _gameType,
+        uint256 _initBond
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         initBonds[_gameType] = _initBond;
         emit InitBondUpdated(_gameType, _initBond);
     }
